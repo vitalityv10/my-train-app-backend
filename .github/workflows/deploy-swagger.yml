@@ -34,7 +34,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres -d train_app"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
@@ -66,13 +66,30 @@ jobs:
 
       - name: Start backend & export OpenAPI specification (openapi.json)
         working-directory: ./backend
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/train_app
+          SPRING_DATASOURCE_USERNAME: postgres
+          SPRING_DATASOURCE_PASSWORD: postgres
+          SPRING_DATA_REDIS_HOST: localhost
+          SPRING_DATA_REDIS_PORT: 6379
+          REDIS_PASSWORD: ""
+          ALLOWED_CUSTOM_ORIGINS: http://localhost:3000,http://localhost:5173
+          FIREBASE_PROJECT_ID: ""
+          FIREBASE_API_KEY: ""
+          FIREBASE_JWK_SET_URI: https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com
         run: |
           mkdir -p ../public
-          java -jar target/*.jar --spring.profiles.active=local &
+          JAR_FILE=$(ls target/*.jar | grep -v plain | head -n 1)
+          echo "Starting $JAR_FILE..."
+          java -jar "$JAR_FILE" &
           APP_PID=$!
 
           echo "Waiting for backend to start on port 8080..."
           for i in $(seq 1 60); do
+            if ! kill -0 $APP_PID 2>/dev/null; then
+              echo "Backend process exited unexpectedly!"
+              exit 1
+            fi
             if curl -sSf http://localhost:8080/v3/api-docs -o ../public/openapi.json; then
               echo "OpenAPI spec exported successfully!"
               break
