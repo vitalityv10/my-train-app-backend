@@ -100,7 +100,7 @@ jobs:
           kill $APP_PID || true
           test -s ../public/openapi.json
 
-      - name: Generate static Swagger UI page
+      - name: Generate static Redoc page
         run: |
           cat << 'EOF' > public/index.html
           <!DOCTYPE html>
@@ -108,30 +108,12 @@ jobs:
           <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <title>My Train App API - Swagger UI</title>
-            <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
-            <style>
-              body { margin: 0; background: #fafafa; }
-            </style>
+            <title>My Train App API</title>
+            <style>body { margin: 0; }</style>
           </head>
           <body>
-            <div id="swagger-ui"></div>
-            <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
-            <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js" crossorigin></script>
-            <script>
-              window.onload = () => {
-                window.ui = SwaggerUIBundle({
-                  url: './openapi.json',
-                  dom_id: '#swagger-ui',
-                  deepLinking: true,
-                  presets: [
-                    SwaggerUIBundle.presets.apis,
-                    SwaggerUIStandalonePreset
-                  ],
-                  layout: 'StandaloneLayout'
-                });
-              };
-            </script>
+            <redoc spec-url="./openapi.json"></redoc>
+            <script src="https://cdn.jsdelivr.net/npm/redoc@2.1.5/bundles/redoc.standalone.js"></script>
           </body>
           </html>
           EOF
