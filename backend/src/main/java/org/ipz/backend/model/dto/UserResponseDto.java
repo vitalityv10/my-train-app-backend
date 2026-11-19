@@ -6,6 +6,7 @@ import org.ipz.backend.model.enums.PaymentMethod;
 import org.ipz.backend.model.enums.PaymentStatus;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -24,6 +25,7 @@ public record UserResponseDto(
             Integer trainId,
             String number,
             String title,
+            LocalDate departureDate,
             TrainResponseDto.RouteDto route,
             TicketSeatDto seat,
             TicketPaymentDto payment

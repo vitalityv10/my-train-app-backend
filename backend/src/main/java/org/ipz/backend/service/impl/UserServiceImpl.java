@@ -73,12 +73,18 @@ public class UserServiceImpl implements UserService {
         UserEntity userEntity = userRepository.findById(firebaseUid)
                 .orElseThrow(() -> new NotFoundException("User with uid " + firebaseUid + " not found"));
 
-        List<TicketEntity> ticketEntities = ticketRepository.findAllByUserFirebaseUidOrderByCreatedAtDesc(firebaseUid);
-        List<Ticket> tickets = ticketMapper.toDomainList(ticketEntities);
+        List<Ticket> tickets = getUserTickets(firebaseUid);
 
         User user = userMapper.toDomain(userEntity);
         user.setTickets(tickets);
         return user;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Ticket> getUserTickets(String firebaseUid) {
+        List<TicketEntity> ticketEntities = ticketRepository.findAllByUserFirebaseUidOrderByCreatedAtDesc(firebaseUid);
+        return ticketMapper.toDomainList(ticketEntities);
     }
 
     private String resolveValue(String preferred, String fallback) {
