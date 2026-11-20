@@ -27,6 +27,8 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Transactional
 @RequiredArgsConstructor
@@ -98,18 +100,24 @@ public class TrainServiceImpl implements TrainService {
 
     @Override
     public List<Train> seedInitialTrains() {
-        if (trainRepository.count() > 0) {
-            log.info("Trains table already populated, skipping seed.");
-            evictTrainCaches();
-            return mapper.toDomainList(trainRepository.findAll(Sort.by(Sort.Direction.ASC, "id")));
+        List<TrainEntity> existing = trainRepository.findAll(Sort.by(Sort.Direction.ASC, "id"));
+        Set<String> existingNumbers = existing.stream()
+                .map(TrainEntity::getNumber)
+                .collect(Collectors.toSet());
+
+        List<TrainEntity> toInsert = buildInitialTrainsData().stream()
+                .filter(train -> !existingNumbers.contains(train.getNumber()))
+                .toList();
+
+        if (!toInsert.isEmpty()) {
+            trainRepository.saveAll(toInsert);
+            log.info("Seeded {} new trains into database.", toInsert.size());
+        } else {
+            log.info("All seed trains already exist in database, skipping insert.");
         }
 
-        List<TrainEntity> seedData = buildInitialTrainsData();
-        List<TrainEntity> saved = trainRepository.saveAll(seedData);
         evictTrainCaches();
-
-        log.info("Seeded {} initial trains into database.", saved.size());
-        return mapper.toDomainList(saved);
+        return mapper.toDomainList(trainRepository.findAll(Sort.by(Sort.Direction.ASC, "id")));
     }
 
     private boolean isUnfiltered(TrainFilter filter) {
@@ -259,6 +267,160 @@ public class TrainServiceImpl implements TrainService {
                         .totalCarriages(3)
                         .seatsPerCarriage(36)
                         .basePrice(new BigDecimal("310.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("732К")
+                        .title("Інтерсіті+ Київ — Дніпро")
+                        .description("Швидкісний денний поїзд до Дніпра з Wi-Fi, кондиціонером та буфетом.")
+                        .type(TrainType.DAY)
+                        .imageUrl("https://images.unsplash.com/photo-1474487548417-781cb71495f3?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(true)
+                        .hasAirConditioning(true)
+                        .fromCity("Київ")
+                        .fromStation("Київ-Пасажирський")
+                        .departureTime(OffsetDateTime.parse("2026-11-08T07:15:00Z"))
+                        .toCity("Дніпро")
+                        .toStation("Дніпро-Головний")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-08T12:55:00Z"))
+                        .duration("5 год 40 хв")
+                        .seatClass("2 клас")
+                        .defaultCarriage(1)
+                        .defaultSeatNumber(10)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("340.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("043К")
+                        .title("Стефанія Експрес Київ — Івано-Франківськ")
+                        .description("Нічний фірмовий поїзд до Карпат зі зручними купейними вагонами.")
+                        .type(TrainType.NIGHT)
+                        .imageUrl("https://images.unsplash.com/photo-1515165562839-978bbcf18277?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(false)
+                        .hasAirConditioning(true)
+                        .fromCity("Київ")
+                        .fromStation("Київ-Пасажирський")
+                        .departureTime(OffsetDateTime.parse("2026-11-08T19:05:00Z"))
+                        .toCity("Івано-Франківськ")
+                        .toStation("Івано-Франківськ")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-09T05:45:00Z"))
+                        .duration("10 год 40 хв")
+                        .seatClass("Купе")
+                        .defaultCarriage(3)
+                        .defaultSeatNumber(12)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("490.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("029К")
+                        .title("Нічний експрес Київ — Ужгород")
+                        .description("Комфортний нічний поїзд через Карпати до Закарпаття з вагонами люкс і купе.")
+                        .type(TrainType.NIGHT)
+                        .imageUrl("https://images.unsplash.com/photo-1515165562839-978bbcf18277?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(true)
+                        .hasAirConditioning(true)
+                        .fromCity("Київ")
+                        .fromStation("Київ-Пасажирський")
+                        .departureTime(OffsetDateTime.parse("2026-11-09T20:30:00Z"))
+                        .toCity("Ужгород")
+                        .toStation("Ужгород")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-10T09:15:00Z"))
+                        .duration("12 год 45 хв")
+                        .seatClass("Люкс")
+                        .defaultCarriage(2)
+                        .defaultSeatNumber(4)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("720.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("012Л")
+                        .title("Західний експрес Львів — Одеса")
+                        .description("Прямий нічний поїзд між Львовом та узбережжям Чорного моря.")
+                        .type(TrainType.NIGHT)
+                        .imageUrl("https://images.unsplash.com/photo-1515165562839-978bbcf18277?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(false)
+                        .hasAirConditioning(true)
+                        .fromCity("Львів")
+                        .fromStation("Львів-Головний")
+                        .departureTime(OffsetDateTime.parse("2026-11-10T22:10:00Z"))
+                        .toCity("Одеса")
+                        .toStation("Одеса-Головна")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-11T08:40:00Z"))
+                        .duration("10 год 30 хв")
+                        .seatClass("Купе")
+                        .defaultCarriage(1)
+                        .defaultSeatNumber(16)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("540.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("702Л")
+                        .title("Регіональний експрес Львів — Чернівці")
+                        .description("Бюджетний денний регіональний поїзд мальовничим маршрутом Прикарпаття.")
+                        .type(TrainType.DAY)
+                        .imageUrl("https://images.unsplash.com/photo-1532105956626-9569c03602f6?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(false)
+                        .hasAirConditioning(false)
+                        .fromCity("Львів")
+                        .fromStation("Львів-Головний")
+                        .departureTime(OffsetDateTime.parse("2026-11-11T08:00:00Z"))
+                        .toCity("Чернівці")
+                        .toStation("Чернівці")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-11T12:20:00Z"))
+                        .duration("4 год 20 хв")
+                        .seatClass("2 клас")
+                        .defaultCarriage(2)
+                        .defaultSeatNumber(18)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("185.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("038К")
+                        .title("Нічний експрес Київ — Запоріжжя")
+                        .description("Швидкий нічний поїзд із плацкартними та купейними вагонами.")
+                        .type(TrainType.NIGHT)
+                        .imageUrl("https://images.unsplash.com/photo-1515165562839-978bbcf18277?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(false)
+                        .hasAirConditioning(true)
+                        .fromCity("Київ")
+                        .fromStation("Київ-Пасажирський")
+                        .departureTime(OffsetDateTime.parse("2026-11-12T21:45:00Z"))
+                        .toCity("Запоріжжя")
+                        .toStation("Запоріжжя-1")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-13T07:05:00Z"))
+                        .duration("9 год 20 хв")
+                        .seatClass("Плацкарт")
+                        .defaultCarriage(3)
+                        .defaultSeatNumber(25)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("260.00"))
+                        .build(),
+                TrainEntity.builder()
+                        .number("724К")
+                        .title("Інтерсіті+ Харків — Київ")
+                        .description("Зворотний швидкісний денний рейс із Wi-Fi та кав'ярнею.")
+                        .type(TrainType.DAY)
+                        .imageUrl("https://images.unsplash.com/photo-1474487548417-781cb71495f3?auto=format&fit=crop&w=800&q=80")
+                        .hasWifi(true)
+                        .hasAirConditioning(true)
+                        .fromCity("Харків")
+                        .fromStation("Харків-Пасажирський")
+                        .departureTime(OffsetDateTime.parse("2026-11-13T07:20:00Z"))
+                        .toCity("Київ")
+                        .toStation("Київ-Пасажирський")
+                        .arrivalTime(OffsetDateTime.parse("2026-11-13T12:25:00Z"))
+                        .duration("5 год 05 хв")
+                        .seatClass("1 клас")
+                        .defaultCarriage(1)
+                        .defaultSeatNumber(6)
+                        .totalCarriages(3)
+                        .seatsPerCarriage(36)
+                        .basePrice(new BigDecimal("390.00"))
                         .build()
         );
     }
