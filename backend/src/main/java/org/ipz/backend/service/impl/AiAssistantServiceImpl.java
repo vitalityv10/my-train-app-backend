@@ -7,21 +7,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.ipz.backend.controller.mapper.CartControllerMapper;
+import org.ipz.backend.controller.mapper.CheckoutControllerMapper;
 import org.ipz.backend.controller.mapper.TrainControllerMapper;
 import org.ipz.backend.exception.AiServiceException;
-import org.ipz.backend.exception.NotFoundException;
-import org.ipz.backend.model.Ticket;
 import org.ipz.backend.model.Train;
-import org.ipz.backend.model.TrainOccupancy;
 import org.ipz.backend.model.dto.AiChatRequestDto;
 import org.ipz.backend.model.dto.AiChatResponseDto;
 import org.ipz.backend.model.dto.AiSmartSearchRequestDto;
 import org.ipz.backend.model.dto.AiSmartSearchResponseDto;
 import org.ipz.backend.model.dto.TrainFilter;
 import org.ipz.backend.service.AiAssistantService;
-import org.ipz.backend.service.OccupancyService;
 import org.ipz.backend.service.TrainService;
-import org.ipz.backend.service.UserService;
+import org.ipz.backend.service.tools.AiTool;
+import org.ipz.backend.service.tools.AiToolContext;
+import org.ipz.backend.service.tools.AiToolSupport;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -41,7 +41,6 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDate;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -57,13 +56,14 @@ import java.util.UUID;
 public class AiAssistantServiceImpl implements AiAssistantService {
 
     private static final String CHAT_CACHE_PREFIX = "ai:chat:";
-    private static final int MAX_TOOL_ITERATIONS = 3;
-    private static final int MAX_SUGGESTED_TRAINS = 6;
+    private static final int MAX_TOOL_ITERATIONS = 5;
 
+    private final Map<String, AiTool> toolStrategies;
+    private final AiToolSupport toolSupport;
     private final TrainService trainService;
-    private final OccupancyService occupancyService;
-    private final UserService userService;
     private final TrainControllerMapper trainMapper;
+    private final CartControllerMapper cartMapper;
+    private final CheckoutControllerMapper checkoutMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
@@ -108,7 +108,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
     }
 
     @Override
-    public AiChatResponseDto chat(AiChatRequestDto requestDto, String firebaseUid) {
+    public AiChatResponseDto chat(AiChatRequestDto requestDto, String firebaseUid, String userEmail, String userName) {
         ensureApiKeyConfigured();
 
         String sessionId = StringUtils.hasText(requestDto.sessionId())
@@ -138,24 +138,26 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 "content", userMessage
         ));
 
-        Map<Integer, Train> collectedTrains = new LinkedHashMap<>();
+        AiToolContext toolContext = new AiToolContext(firebaseUid, userEmail, userName);
         Set<String> usedTools = new LinkedHashSet<>();
 
-        String assistantReply = executeConversationWithTools(messages, firebaseUid, collectedTrains, usedTools);
+        String assistantReply = executeConversationWithTools(messages, toolContext, usedTools);
 
         history.add(new HistoryEntry("user", userMessage));
         history.add(new HistoryEntry("assistant", assistantReply));
         saveHistory(sessionId, history);
 
         long elapsedMs = System.currentTimeMillis() - startTime;
-        log.info("AI chat completed in {} ms (sessionId={}, tools={}, suggestedTrains={})",
-                elapsedMs, sessionId, usedTools, collectedTrains.size());
+        log.info("AI chat completed in {} ms (sessionId={}, tools={}, suggestedTrains={}, bookedTickets={})",
+                elapsedMs, sessionId, usedTools, toolContext.getCollectedTrains().size(), toolContext.getBookedTickets().size());
 
         return AiChatResponseDto.builder()
                 .sessionId(sessionId)
                 .reply(assistantReply)
-                .suggestedTrains(trainMapper.toDtoList(new ArrayList<>(collectedTrains.values())))
+                .suggestedTrains(trainMapper.toDtoList(new ArrayList<>(toolContext.getCollectedTrains().values())))
                 .usedTools(new ArrayList<>(usedTools))
+                .cart(toolContext.getUpdatedCart() != null ? cartMapper.toDto(toolContext.getUpdatedCart()) : null)
+                .bookedTickets(checkoutMapper.toPurchasedTicketDtoList(toolContext.getBookedTickets()))
                 .build();
     }
 
@@ -207,17 +209,17 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
         String fromCity = null;
         String toCity = null;
-        TrainFilter filter = new TrainFilter();
+        TrainFilter filter;
 
         try {
             JsonNode json = objectMapper.readTree(cleanJsonContent(content));
-            fromCity = normalizeCityName(getTextOrNull(json, "fromCity"));
-            toCity = normalizeCityName(getTextOrNull(json, "toCity"));
-            String city = normalizeCityName(getTextOrNull(json, "city"));
-            String search = getTextOrNull(json, "search");
-            LocalDate date = parseLocalDateOrNull(getTextOrNull(json, "date"));
-            BigDecimal maxPrice = getDecimalOrNull(json, "maxPrice");
-            Boolean wifiOnly = getBooleanOrNull(json, "wifiOnly");
+            fromCity = toolSupport.normalizeCityName(toolSupport.getTextOrNull(json, "fromCity"));
+            toCity = toolSupport.normalizeCityName(toolSupport.getTextOrNull(json, "toCity"));
+            String city = toolSupport.normalizeCityName(toolSupport.getTextOrNull(json, "city"));
+            String search = toolSupport.getTextOrNull(json, "search");
+            LocalDate date = toolSupport.parseLocalDateOrNull(toolSupport.getTextOrNull(json, "date"));
+            BigDecimal maxPrice = toolSupport.getDecimalOrNull(json, "maxPrice");
+            Boolean wifiOnly = toolSupport.getBooleanOrNull(json, "wifiOnly");
 
             if (!StringUtils.hasText(city)) {
                 city = StringUtils.hasText(toCity) ? toCity : fromCity;
@@ -235,7 +237,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
             filter = TrainFilter.builder().search(requestDto.query().trim()).build();
         }
 
-        List<Train> matched = searchTrainsWithEndpoints(filter, fromCity, toCity);
+        List<Train> matched = toolSupport.searchTrainsWithEndpoints(filter, fromCity, toCity);
 
         return AiSmartSearchResponseDto.builder()
                 .appliedFilter(filter)
@@ -245,11 +247,12 @@ public class AiAssistantServiceImpl implements AiAssistantService {
 
     private String executeConversationWithTools(
             List<Map<String, Object>> messages,
-            String firebaseUid,
-            Map<Integer, Train> collectedTrains,
+            AiToolContext toolContext,
             Set<String> usedTools) {
 
-        List<Map<String, Object>> tools = buildToolDefinitions();
+        List<Map<String, Object>> tools = toolStrategies.values().stream()
+                .map(AiTool::getDefinition)
+                .toList();
 
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
             Map<String, Object> payload = new LinkedHashMap<>();
@@ -264,7 +267,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 responseNode = callChatCompletions(payload);
             } catch (AiToolUseFailedException ex) {
                 log.warn("Groq tool_use_failed occurred, executing fallback completion with inline train catalog");
-                return executeFallbackWithInlineCatalog(messages, collectedTrains, usedTools);
+                return executeFallbackWithInlineCatalog(messages, toolContext, usedTools);
             }
 
             JsonNode messageNode = responseNode.path("choices").path(0).path("message");
@@ -293,7 +296,7 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 String argumentsJson = toolCall.path("function").path("arguments").asText("{}");
 
                 usedTools.add(functionName);
-                String toolResultJson = executeTool(functionName, argumentsJson, firebaseUid, collectedTrains);
+                String toolResultJson = executeTool(functionName, argumentsJson, toolContext);
 
                 Map<String, Object> toolResponseMsg = new LinkedHashMap<>();
                 toolResponseMsg.put("role", "tool");
@@ -316,9 +319,35 @@ public class AiAssistantServiceImpl implements AiAssistantService {
                 : "Ось знайдені варіанти за вашим запитом.";
     }
 
+    private String executeTool(
+            String functionName,
+            String argumentsJson,
+            AiToolContext toolContext) {
+
+        log.info("Executing AI tool '{}' with args: {}", functionName, argumentsJson);
+
+        AiTool strategy = toolStrategies.get(functionName);
+        if (strategy == null) {
+            log.warn("Requested unknown AI tool strategy: {}", functionName);
+            return toJsonSafe(Map.of("error", "Unknown tool: " + functionName));
+        }
+
+        try {
+            JsonNode args = StringUtils.hasText(argumentsJson)
+                    ? objectMapper.readTree(argumentsJson)
+                    : objectMapper.createObjectNode();
+
+            Object result = strategy.execute(args, toolContext);
+            return toJsonSafe(result);
+        } catch (Exception e) {
+            log.warn("Error executing tool {}: {}", functionName, e.getMessage());
+            return toJsonSafe(Map.of("error", e.getMessage() != null ? e.getMessage() : "Tool execution failed"));
+        }
+    }
+
     private String executeFallbackWithInlineCatalog(
             List<Map<String, Object>> originalMessages,
-            Map<Integer, Train> collectedTrains,
+            AiToolContext toolContext,
             Set<String> usedTools) {
 
         List<Train> allTrains = trainService.findTrains(new TrainFilter());
@@ -334,12 +363,12 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         }
 
         for (Train train : allTrains) {
-            if (matchesQueryKeywords(train, userQueryLower) && collectedTrains.size() < MAX_SUGGESTED_TRAINS) {
-                collectedTrains.put(train.getId(), train);
+            if (matchesQueryKeywords(train, userQueryLower)) {
+                toolContext.addSuggestedTrain(train);
             }
         }
 
-        String catalogJson = toJsonSafe(allTrains.stream().map(this::toCompactTrainMap).toList());
+        String catalogJson = toJsonSafe(allTrains.stream().map(toolSupport::toCompactTrainMap).toList());
 
         List<Map<String, Object>> fallbackMessages = new ArrayList<>();
         fallbackMessages.add(Map.of(
@@ -376,360 +405,6 @@ public class AiAssistantServiceImpl implements AiAssistantService {
         return (!fromPrefix.isEmpty() && queryLower.contains(fromPrefix))
                 || (!toPrefix.isEmpty() && queryLower.contains(toPrefix))
                 || (train.getNumber() != null && queryLower.contains(train.getNumber().toLowerCase(Locale.ROOT)));
-    }
-
-    private String executeTool(
-            String functionName,
-            String argumentsJson,
-            String firebaseUid,
-            Map<Integer, Train> collectedTrains) {
-
-        log.info("Executing AI tool '{}' with args: {}", functionName, argumentsJson);
-
-        try {
-            JsonNode args = StringUtils.hasText(argumentsJson)
-                    ? objectMapper.readTree(argumentsJson)
-                    : objectMapper.createObjectNode();
-
-            return switch (functionName) {
-                case "get_available_cities" -> handleGetAvailableCities();
-                case "search_trains" -> handleSearchTrains(args, collectedTrains);
-                case "get_train_details" -> handleGetTrainDetails(args, collectedTrains);
-                case "check_seat_occupancy" -> handleCheckSeatOccupancy(args);
-                case "get_my_tickets" -> handleGetMyTickets(firebaseUid);
-                default -> toJsonSafe(Map.of("error", "Unknown tool: " + functionName));
-            };
-        } catch (Exception e) {
-            log.warn("Error executing tool {}: {}", functionName, e.getMessage());
-            return toJsonSafe(Map.of("error", e.getMessage() != null ? e.getMessage() : "Tool execution failed"));
-        }
-    }
-
-    private String handleGetAvailableCities() {
-        List<String> cities = trainService.findAllCities();
-        return toJsonSafe(Map.of(
-                "count", cities.size(),
-                "cities", cities
-        ));
-    }
-
-    private String handleSearchTrains(JsonNode args, Map<Integer, Train> collectedTrains) {
-        String fromCity = normalizeCityName(getTextOrNull(args, "fromCity"));
-        String toCity = normalizeCityName(getTextOrNull(args, "toCity"));
-        String city = normalizeCityName(getTextOrNull(args, "city"));
-        String search = getTextOrNull(args, "search");
-        LocalDate date = parseLocalDateOrNull(getTextOrNull(args, "date"));
-        BigDecimal maxPrice = getDecimalOrNull(args, "maxPrice");
-        Boolean wifiOnly = getBooleanOrNull(args, "wifiOnly");
-
-        if (!StringUtils.hasText(city)) {
-            city = StringUtils.hasText(toCity) ? toCity : fromCity;
-        }
-
-        TrainFilter filter = TrainFilter.builder()
-                .search(search)
-                .city(city)
-                .date(date)
-                .maxPrice(maxPrice)
-                .wifiOnly(wifiOnly)
-                .build();
-
-        List<Train> trains = searchTrainsWithEndpoints(filter, fromCity, toCity);
-        boolean dateFallbackApplied = false;
-
-        if (trains.isEmpty() && date != null) {
-            TrainFilter withoutDate = TrainFilter.builder()
-                    .search(search)
-                    .city(city)
-                    .maxPrice(maxPrice)
-                    .wifiOnly(wifiOnly)
-                    .build();
-            trains = searchTrainsWithEndpoints(withoutDate, fromCity, toCity);
-            dateFallbackApplied = !trains.isEmpty();
-        }
-
-        for (Train train : trains) {
-            if (collectedTrains.size() < MAX_SUGGESTED_TRAINS) {
-                collectedTrains.put(train.getId(), train);
-            }
-        }
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("count", trains.size());
-        if (dateFallbackApplied) {
-            result.put("note", "На точну дату рейсів не знайдено, показано регулярні рейси за цим маршрутом у розкладі.");
-        }
-        result.put("trains", trains.stream().map(this::toCompactTrainMap).toList());
-        return toJsonSafe(result);
-    }
-
-    private List<Train> searchTrainsWithEndpoints(TrainFilter filter, String fromCity, String toCity) {
-        List<Train> initial = trainService.findTrains(filter);
-
-        return initial.stream()
-                .filter(train -> !StringUtils.hasText(fromCity) || cityMatches(train.getFromCity(), fromCity))
-                .filter(train -> !StringUtils.hasText(toCity) || cityMatches(train.getToCity(), toCity))
-                .toList();
-    }
-
-    private boolean cityMatches(String actualCity, String requestedCity) {
-        if (!StringUtils.hasText(actualCity) || !StringUtils.hasText(requestedCity)) {
-            return false;
-        }
-        String a = actualCity.trim().toLowerCase(Locale.ROOT);
-        String r = requestedCity.trim().toLowerCase(Locale.ROOT);
-        return a.equals(r) || a.contains(r) || r.contains(a);
-    }
-
-    private String normalizeCityName(String rawCity) {
-        if (!StringUtils.hasText(rawCity)) {
-            return null;
-        }
-        String trimmed = rawCity.trim();
-        String lower = trimmed.toLowerCase(Locale.ROOT);
-        List<String> knownCities = trainService.findAllCities();
-
-        for (String known : knownCities) {
-            if (known.equalsIgnoreCase(trimmed)) {
-                return known;
-            }
-        }
-
-        for (String known : knownCities) {
-            String knownLower = known.toLowerCase(Locale.ROOT);
-            int prefixLen = Math.min(4, knownLower.length());
-            if (prefixLen >= 3 && lower.startsWith(knownLower.substring(0, prefixLen))) {
-                return known;
-            }
-        }
-
-        if (lower.startsWith("києв") || lower.startsWith("київ")) {
-            return "Київ";
-        }
-        if (lower.startsWith("львов") || lower.startsWith("львів")) {
-            return "Львів";
-        }
-        if (lower.startsWith("одес")) {
-            return "Одеса";
-        }
-        if (lower.startsWith("харков") || lower.startsWith("харків")) {
-            return "Харків";
-        }
-        if (lower.startsWith("дніпр")) {
-            return "Дніпро";
-        }
-
-        return trimmed;
-    }
-
-    private String handleGetTrainDetails(JsonNode args, Map<Integer, Train> collectedTrains) {
-        int trainId = args.path("trainId").asInt(-1);
-        if (trainId <= 0) {
-            return toJsonSafe(Map.of("error", "Некоректний trainId"));
-        }
-        try {
-            Train train = trainService.findById(trainId);
-            if (collectedTrains.size() < MAX_SUGGESTED_TRAINS) {
-                collectedTrains.put(train.getId(), train);
-            }
-            return toJsonSafe(toCompactTrainMap(train));
-        } catch (NotFoundException e) {
-            return toJsonSafe(Map.of("error", "Потяг з ID " + trainId + " не знайдено"));
-        }
-    }
-
-    private String handleCheckSeatOccupancy(JsonNode args) {
-        int trainId = args.path("trainId").asInt(-1);
-        if (trainId <= 0) {
-            return toJsonSafe(Map.of("error", "Некоректний trainId"));
-        }
-
-        LocalDate date = parseLocalDateOrNull(getTextOrNull(args, "date"));
-        if (date == null) {
-            try {
-                Train train = trainService.findById(trainId);
-                date = train.getDepartureTime() != null
-                        ? train.getDepartureTime().toLocalDate()
-                        : LocalDate.now();
-            } catch (Exception ignored) {
-                date = LocalDate.now();
-            }
-        }
-
-        try {
-            TrainOccupancy occupancy = occupancyService.getTrainOccupancy(trainId, date);
-            int totalSeats = occupancy.getTotalCarriages() * occupancy.getSeatsPerCarriage();
-            int occupiedCount = occupancy.getOccupiedSeats() != null ? occupancy.getOccupiedSeats().size() : 0;
-            int freeSeats = Math.max(0, totalSeats - occupiedCount);
-
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("trainId", trainId);
-            result.put("date", date.toString());
-            result.put("totalCarriages", occupancy.getTotalCarriages());
-            result.put("seatsPerCarriage", occupancy.getSeatsPerCarriage());
-            result.put("totalSeats", totalSeats);
-            result.put("occupiedSeatsCount", occupiedCount);
-            result.put("freeSeatsCount", freeSeats);
-            result.put("occupiedSeats", occupancy.getOccupiedSeats());
-            return toJsonSafe(result);
-        } catch (NotFoundException e) {
-            return toJsonSafe(Map.of("error", "Потяг з ID " + trainId + " не знайдено"));
-        }
-    }
-
-    private String handleGetMyTickets(String firebaseUid) {
-        if (!StringUtils.hasText(firebaseUid)) {
-            return toJsonSafe(Map.of(
-                    "authenticated", false,
-                    "message", "Користувач не авторизований. Попросіть його увійти в акаунт, щоб переглянути придбані квитки."
-            ));
-        }
-
-        List<Ticket> tickets = userService.getUserTickets(firebaseUid);
-        List<Map<String, Object>> ticketSummaries = tickets.stream().map(t -> {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("ticketId", t.getTicketId());
-            map.put("trainNumber", t.getTrainNumber());
-            map.put("trainTitle", t.getTrainTitle());
-            map.put("fromCity", t.getFromCity());
-            map.put("toCity", t.getToCity());
-            map.put("departureDate", t.getDepartureDate() != null ? t.getDepartureDate().toString() : null);
-            map.put("carriage", t.getCarriage());
-            map.put("seatNumber", t.getSeatNumber());
-            map.put("seatClass", t.getSeatClass());
-            map.put("price", t.getPrice());
-            map.put("paymentStatus", t.getPaymentStatus());
-            return map;
-        }).toList();
-
-        return toJsonSafe(Map.of(
-                "authenticated", true,
-                "count", ticketSummaries.size(),
-                "tickets", ticketSummaries
-        ));
-    }
-
-    private Map<String, Object> toCompactTrainMap(Train t) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        map.put("id", t.getId());
-        map.put("number", t.getNumber());
-        map.put("title", t.getTitle());
-        map.put("type", t.getType() != null ? t.getType().getValue() : null);
-        map.put("fromCity", t.getFromCity());
-        map.put("fromStation", t.getFromStation());
-        map.put("departureTime", t.getDepartureTime() != null ? t.getDepartureTime().toString() : null);
-        map.put("toCity", t.getToCity());
-        map.put("toStation", t.getToStation());
-        map.put("arrivalTime", t.getArrivalTime() != null ? t.getArrivalTime().toString() : null);
-        map.put("duration", t.getDuration());
-        map.put("seatClass", t.getSeatClass());
-        map.put("basePrice", t.getBasePrice());
-        map.put("hasWifi", t.getHasWifi());
-        map.put("hasAirConditioning", t.getHasAirConditioning());
-        return map;
-    }
-
-    private List<Map<String, Object>> buildToolDefinitions() {
-        List<Map<String, Object>> tools = new ArrayList<>();
-
-        tools.add(Map.of(
-                "type", "function",
-                "function", Map.of(
-                        "name", "get_available_cities",
-                        "description", "Повертає список усіх міст відправлення та прибуття, які є в розкладі потягів.",
-                        "parameters", Map.of(
-                                "type", "object",
-                                "properties", Map.of()
-                        )
-                )
-        ));
-
-        Map<String, Object> searchProps = new LinkedHashMap<>();
-        searchProps.put("fromCity", Map.of(
-                "type", "string",
-                "description", "Місто відправлення українською в називному відмінку (наприклад: 'Київ', 'Львів', 'Харків')"
-        ));
-        searchProps.put("toCity", Map.of(
-                "type", "string",
-                "description", "Місто прибуття українською в називному відмінку (наприклад: 'Львів', 'Одеса', 'Дніпро', 'Ужгород', 'Чернівці', 'Івано-Франківськ', 'Запоріжжя')"
-        ));
-        searchProps.put("city", Map.of(
-                "type", "string",
-                "description", "Місто відправлення або прибуття українською в називному відмінку, якщо напрямок не уточнено"
-        ));
-        searchProps.put("search", Map.of(
-                "type", "string",
-                "description", "Пошуковий рядок за номером потяга (наприклад '715К') або назвою"
-        ));
-        searchProps.put("date", Map.of(
-                "type", "string",
-                "description", "Дата відправлення у форматі YYYY-MM-DD"
-        ));
-        searchProps.put("maxPrice", Map.of(
-                "type", "number",
-                "description", "Максимальна ціна квитка у гривнях"
-        ));
-        searchProps.put("wifiOnly", Map.of(
-                "type", "boolean",
-                "description", "Встановити true, якщо потрібні лише потяги з Wi-Fi"
-        ));
-
-        tools.add(Map.of(
-                "type", "function",
-                "function", Map.of(
-                        "name", "search_trains",
-                        "description", "Шукає потяги у базі даних за містом відправлення/прибуття, датою, максимальною ціною, наявністю Wi-Fi або номером потяга.",
-                        "parameters", Map.of(
-                                "type", "object",
-                                "properties", searchProps
-                        )
-                )
-        ));
-
-        tools.add(Map.of(
-                "type", "function",
-                "function", Map.of(
-                        "name", "get_train_details",
-                        "description", "Повертає детальну інформацію про конкретний потяг за його числовим ID.",
-                        "parameters", Map.of(
-                                "type", "object",
-                                "properties", Map.of(
-                                        "trainId", Map.of("type", "integer", "description", "Унікальний числовий ID потяга")
-                                ),
-                                "required", List.of("trainId")
-                        )
-                )
-        ));
-
-        tools.add(Map.of(
-                "type", "function",
-                "function", Map.of(
-                        "name", "check_seat_occupancy",
-                        "description", "Перевіряє кількість вільних та зайнятих місць на конкретний потяг і дату.",
-                        "parameters", Map.of(
-                                "type", "object",
-                                "properties", Map.of(
-                                        "trainId", Map.of("type", "integer", "description", "Унікальний числовий ID потяга"),
-                                        "date", Map.of("type", "string", "description", "Дата відправлення YYYY-MM-DD (опційно)")
-                                ),
-                                "required", List.of("trainId")
-                        )
-                )
-        ));
-
-        tools.add(Map.of(
-                "type", "function",
-                "function", Map.of(
-                        "name", "get_my_tickets",
-                        "description", "Повертає список придбаних квитків поточного авторизованого користувача.",
-                        "parameters", Map.of(
-                                "type", "object",
-                                "properties", Map.of()
-                        )
-                )
-        ));
-
-        return tools;
     }
 
     private JsonNode callChatCompletions(Map<String, Object> payload) {
@@ -851,59 +526,6 @@ public class AiAssistantServiceImpl implements AiAssistantService {
             }
         }
         return trimmed;
-    }
-
-    private String getTextOrNull(JsonNode node, String field) {
-        if (node == null || !node.hasNonNull(field)) {
-            return null;
-        }
-        String val = node.get(field).asText("").trim();
-        return StringUtils.hasText(val) && !"null".equalsIgnoreCase(val) ? val : null;
-    }
-
-    private BigDecimal getDecimalOrNull(JsonNode node, String field) {
-        if (node == null || !node.hasNonNull(field)) {
-            return null;
-        }
-        JsonNode val = node.get(field);
-        if (val.isNumber()) {
-            return val.decimalValue();
-        }
-        try {
-            String text = val.asText("").trim();
-            return StringUtils.hasText(text) ? new BigDecimal(text) : null;
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    private Boolean getBooleanOrNull(JsonNode node, String field) {
-        if (node == null || !node.hasNonNull(field)) {
-            return null;
-        }
-        JsonNode val = node.get(field);
-        if (val.isBoolean()) {
-            return val.booleanValue();
-        }
-        String text = val.asText("").trim();
-        if ("true".equalsIgnoreCase(text)) {
-            return Boolean.TRUE;
-        }
-        if ("false".equalsIgnoreCase(text)) {
-            return Boolean.FALSE;
-        }
-        return null;
-    }
-
-    private LocalDate parseLocalDateOrNull(String dateStr) {
-        if (!StringUtils.hasText(dateStr)) {
-            return null;
-        }
-        try {
-            return LocalDate.parse(dateStr.trim());
-        } catch (DateTimeParseException e) {
-            return null;
-        }
     }
 
     private String toJsonSafe(Object value) {

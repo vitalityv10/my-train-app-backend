@@ -7,7 +7,11 @@ import org.ipz.backend.model.dto.AiSmartSearchResponseDto;
 
 public interface AiAssistantService {
 
-    AiChatResponseDto chat(AiChatRequestDto requestDto, String firebaseUid);
+    default AiChatResponseDto chat(AiChatRequestDto requestDto, String firebaseUid) {
+        return chat(requestDto, firebaseUid, null, null);
+    }
+
+    AiChatResponseDto chat(AiChatRequestDto requestDto, String firebaseUid, String userEmail, String userName);
 
     void clearChatHistory(String sessionId);
 

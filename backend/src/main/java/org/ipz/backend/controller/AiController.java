@@ -47,7 +47,8 @@ public class AiController {
 
     @Operation(summary = "Chat with AI train route assistant",
             description = "Sends a message to the AI assistant. Uses tool calling to search trains, check available cities, "
-                    + "inspect seat occupancy, and (if authenticated with Bearer JWT) view user's purchased tickets.")
+                    + "inspect seat occupancy, and (if authenticated with Bearer JWT) view user's purchased tickets, "
+                    + "manage shopping cart, and reserve tickets without entering card details.")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "400", description = "Validation failed",
                     content = @Content(schema = @Schema(implementation = ValidationErrorResponseDto.class))),
@@ -59,10 +60,12 @@ public class AiController {
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody AiChatRequestDto requestDto) {
         String firebaseUid = jwt != null ? jwt.getSubject() : null;
+        String userEmail = jwt != null ? jwt.getClaimAsString("email") : null;
+        String userName = jwt != null ? jwt.getClaimAsString("name") : null;
         log.info("Received AI chat request (sessionId={}, authenticated={})",
                 requestDto.sessionId(), firebaseUid != null);
 
-        AiChatResponseDto response = aiAssistantService.chat(requestDto, firebaseUid);
+        AiChatResponseDto response = aiAssistantService.chat(requestDto, firebaseUid, userEmail, userName);
         return ResponseEntity.ok(response);
     }
 

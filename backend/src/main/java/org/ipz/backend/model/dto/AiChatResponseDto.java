@@ -18,6 +18,12 @@ public record AiChatResponseDto(
         List<TrainResponseDto> suggestedTrains,
 
         @Schema(description = "Names of tools invoked by the AI assistant during this turn")
-        List<String> usedTools
+        List<String> usedTools,
+
+        @Schema(description = "Updated shopping cart when cart tools (add_to_cart / book_tickets) are executed, null otherwise")
+        CartDto cart,
+
+        @Schema(description = "Tickets reserved during this chat turn via book_tickets tool")
+        List<CheckoutPurchaseResponseDto.PurchasedTicketDto> bookedTickets
 ) {
 }
