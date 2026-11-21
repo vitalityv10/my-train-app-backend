@@ -19,7 +19,7 @@ public class OpenApiConfig {
                 .info(new Info()
                         .title("My Train App API")
                         .version("1.0.0")
-                        .description("Backend API for train catalog, seat occupancy, shopping cart, and ticket checkout"))
+                        .description("Backend API for train catalog, seat occupancy, shopping cart, ticket checkout, and AI route assistant"))
                 .addSecurityItem(new SecurityRequirement().addList(SECURITY_SCHEME_NAME))
                 .components(new Components()
                         .addSecuritySchemes(SECURITY_SCHEME_NAME, new SecurityScheme()
