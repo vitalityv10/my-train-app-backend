@@ -42,6 +42,17 @@ public class GlobalExceptionHandler {
                         .build());
     }
 
+    @ExceptionHandler(AiServiceException.class)
+    public ResponseEntity<ErrorResponseDto> handleAiServiceException(AiServiceException ex) {
+        log.warn("AI service error ({}): {}", ex.getStatus(), ex.getMessage());
+        return ResponseEntity.status(ex.getStatus())
+                .body(ErrorResponseDto.builder()
+                        .time(LocalDateTime.now())
+                        .statusCode(String.valueOf(ex.getStatus().value()))
+                        .errorMessage(List.of(ex.getMessage()))
+                        .build());
+    }
+
     @ExceptionHandler(SeatOccupiedException.class)
     public ResponseEntity<SeatConflictErrorResponseDto> handleSeatOccupiedException(SeatOccupiedException ex) {
         log.warn("Seat conflict: {} - {}", ex.getMessage(), ex.getConflictingSeats());

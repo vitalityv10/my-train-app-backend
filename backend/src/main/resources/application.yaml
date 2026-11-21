@@ -39,3 +39,10 @@ app:
     project-id: ${FIREBASE_PROJECT_ID}
     api-key: ${FIREBASE_API_KEY}
     jwk-set-uri: ${FIREBASE_JWK_SET_URI}
+  ai:
+    base-url: ${AI_BASE_URL}
+    api-key: ${AI_API_KEY}
+    model: ${AI_MODEL}
+    max-history-messages: ${AI_MAX_HISTORY_MESSAGES:10}
+    history-ttl-minutes: ${AI_HISTORY_TTL_MINUTES:30}
+    timeout-seconds: ${AI_TIMEOUT_SECONDS:30}
